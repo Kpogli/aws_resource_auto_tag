@@ -1,0 +1,845 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: This template creates Tags when multiple AWS Services gets created.
+
+Parameters:
+  Region:
+    Type: String
+    Default: us-east-1
+  ACCOUNTID:
+    Type: String
+    Default: "330183209093"
+  DefaultTagKey:
+    Type: String
+    Default: "tag-key"
+    Description: This Tag key which will be used to Tag the EC2 instances RDS DB instances and S3.
+  DefaultTagValue:
+    Type: String
+    Default: "tag-value1"
+    Description: This Tag value which will be used to Tag the EC2 instances and S3.
+  RDSCommercialTagValue:
+    Type: String
+    Default: "tag-value2"
+    Description: This Tag value which will be used to Tag the commercial RDS DB instance.
+  RDSNonCommercialTagValue:
+    Type: String
+    Default: "tag-value3"
+    Description: This Tag value which will be used to Tag the non-commercial RDS DB instance.
+
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: "LambdaExecutionRolePolicy"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:*
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - ec2:Describe*
+                  - ec2:CreateTags
+                  - s3:GetBucketTagging
+                  - s3:ListAllMyBuckets
+                  - s3:PutBucketTagging
+                  - s3:ListBucket
+                  - rds:AddTagsToResource
+                  - rds:ListTagsForResource
+                  - rds:DescribeDBInstances
+                  - rds:DescribeDBClusters
+                  - states:TagResource
+                  - secretsmanager:TagResource
+                  - ssm:GetParameters
+                  - ssm:AddTagsToResource
+                  - sqs:TagQueue
+                  - sns:TagResource
+                  - ses:TagResource
+                  - route53:ChangeTagsForResource
+                  - route53:GetChange
+                  - route53:GetHostedZone
+                  - route53:ListTagsForResource
+                  - eks:TagResource
+                  - lambda:TagResource
+                  - acm:AddTagsToCertificate
+                  - cloudfront:TagResource
+                  - dynamodb:TagResource
+                  - glacier:AddTagsToVault
+                  - ecs:TagResource
+                  - codecommit:TagResource
+                  - cloudwatch:*
+                  - elasticache:AddTagsToResource
+                  - elasticbeanstalk:*
+                  - events:TagResource
+                  - es:*
+                  - elasticfilesystem:CreateTags
+                  - elasticfilesystem:TagResource
+                  - elasticloadbalancing:AddTags
+                  - cloudtrail:*
+                  - dms:AddTagsToResource
+                  - elasticmapreduce:*
+                  - elasticache:*
+                  - iam:TagSAMLProvider
+                  - iam:TagOpenIDConnectProvider
+                  - iam:TagInstanceProfile
+                  - iam:TagPolicy
+                  - iam:TagRole
+                  - iam:TagUser
+                  - redshift:*
+                  - glue:*
+                Resource: '*'
+
+  AutoTaggingLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: "This Lambda function Tag the AWS resources"
+      FunctionName: Auto_Tag_Resources
+      Handler: index.lambda_handler
+      Runtime: 'python3.9'
+      Timeout: 300
+      MemorySize: 128
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          region: !Ref AWS::Region
+          Default_Tag_Key: !Ref DefaultTagKey
+          Default_Tag_Value: !Ref DefaultTagValue
+          RDS_Comm_Tag_Vaule: !Ref RDSCommercialTagValue
+          RDS_Non_Comm_Tag_Vaule: !Ref RDSNonCommercialTagValue
+          ACCOUNT_ID: !Ref ACCOUNTID
+      Code:
+        ZipFile: |
+            import boto3
+            import logging
+            import os
+
+            logger = logging.getLogger()
+            logger.setLevel(logging.INFO)
+
+            def lambda_handler(event, context):
+                region = os.environ['region']
+                default_tag_key = os.environ['Default_Tag_Key']
+                default_tag_value = os.environ['Default_Tag_Value']
+                rds_comm_tag_value = os.environ['RDS_Comm_Tag_Vaule']
+                rds_non_comm_tag_value = os.environ['RDS_Non_Comm_Tag_Vaule']
+                ACCOUNT_ID = os.environ['ACCOUNT_ID']
+
+                detail = event['detail']
+                event_name = detail['eventName']
+                comm_engine = ['oracle-ee', 'oracle-ee-cdb', 'oracle-se2', 'oracle-se2-cdb', 'custom-oracle-ee', 'custom-oracle-ee-cdb', 'custom-sqlserver-ee', 'custom-sqlserver-se', 'custom-sqlserver-web', 'sqlserver-ee', 'sqlserver-se', 'sqlserver-ex', 'sqlserver-web', 'aurora-mysql', 'aurora-postgresql']
+                non_comm_engine = ['mysql', 'postgres', 'mariadb']
+
+                if event_name == 'RunInstances':
+                    instance_ids = [item['instanceId'] for item in detail['responseElements']['instancesSet']['items']]
+                    logger.info('Number of instances: ' + str(len(instance_ids)))
+
+                    ec2 = boto3.resource('ec2', region_name=region)
+
+                    for instance_id in instance_ids:
+                        logger.info('Tagging resource ' + instance_id)
+                        instance = ec2.Instance(instance_id)
+                        instance.create_tags(Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                        for volume in instance.volumes.all():
+                            logger.info('Tagging EBS volume ' + volume.id)
+                            volume.create_tags(Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                
+                elif event_name == "CreateVolume": # works fine
+                    ec2 = boto3.client('ec2', region_name=region)
+                    volume_id = detail['responseElements']['volumeId']
+                    logger.info(f'Tagging EBS volume {volume_id}')
+                    ec2.create_tags(Resources=[volume_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                
+                elif event_name == 'CreateBucket': # works fine
+                    s3 = boto3.client('s3', region_name=region)
+                    bucket_name = detail['requestParameters']['bucketName']
+                    logger.info('Tagging S3 bucket ' + bucket_name)
+                    s3.put_bucket_tagging(
+                        Bucket=bucket_name,
+                        Tagging={'TagSet': [{'Key': default_tag_key, 'Value': default_tag_value}]}
+                    )
+                
+                elif event_name == 'CreateDBInstance': # works fine
+                    rds = boto3.client('rds', region_name=region)
+
+                    db_instance_arn = detail['responseElements']['dBInstanceArn']
+                    logger.info(f'Tagging RDS instance {db_instance_arn}')
+
+                    engine = detail['responseElements']['engine']
+                    
+                    if engine in non_comm_engine:
+                        rds_tag_value = rds_non_comm_tag_value
+                    elif engine in comm_engine:
+                        rds_tag_value = rds_comm_tag_value
+                    else:
+                        rds_tag_value = rds_non_comm_tag_value
+
+                    rds.add_tags_to_resource(ResourceName=db_instance_arn, Tags=[{'Key': default_tag_key, 'Value': rds_tag_value}])
+
+                elif event_name == 'CreateDBParameterGroup': # works fine
+                    rds = boto3.client('rds', region_name=region)
+                    db_parameter_group_arn = detail['responseElements']['dBParameterGroupArn']
+                    logger.info(f'Tagging RDS Parameter Group {db_parameter_group_arn}')
+                    rds.add_tags_to_resource(ResourceName=db_parameter_group_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    
+                
+                elif event_name == 'CreateDBCluster': # works fine
+                    rds = boto3.client('rds', region_name=region)
+
+                    db_cluster_arn = detail['responseElements']['dBClusterArn']
+                    logger.info(f'Tagging RDS cluster {db_cluster_arn}')
+                    
+                    engine = detail['responseElements']['engine']
+                    
+                    if engine in non_comm_engine:
+                        rds_tag_value = rds_non_comm_tag_value
+                    elif engine in comm_engine:
+                        rds_tag_value = rds_comm_tag_value
+                    else:
+                        rds_tag_value = rds_non_comm_tag_value
+                    
+                    rds.add_tags_to_resource(ResourceName=db_cluster_arn, Tags=[{'Key': default_tag_key, 'Value': rds_tag_value}])
+
+                elif event_name == 'CreateDBClusterParameterGroup': # works fine
+                    rds = boto3.client('rds', region_name=region)
+                    db_cluster_parameter_group_arn = detail['responseElements']['dBClusterParameterGroupArn']
+                    logger.info(f'Tagging RDS Cluster Parameter Group {db_cluster_parameter_group_arn}')
+                    rds.add_tags_to_resource(ResourceName=db_cluster_parameter_group_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    
+                elif event_name == 'CreateDBSubnetGroup': # works fine
+                    rds = boto3.client('rds', region_name=region)
+                    db_subnet_group_arn = detail['responseElements']['dBSubnetGroupArn']
+                    logger.info(f'Tagging RDS Subnet Group {db_subnet_group_arn}')
+                    rds.add_tags_to_resource(ResourceName=db_subnet_group_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    
+                elif event_name == 'CreateDBSecurityGroup': # need to test. Issue with exact method of creating.
+                    rds = boto3.client('rds', region_name=region)
+                    db_security_group_arn = detail['responseElements']['dBSecurityGroupArn']
+                    logger.info(f'Tagging RDS Security Group {db_security_group_arn}')
+                    rds.add_tags_to_resource(ResourceName=db_security_group_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    
+                elif event_name == 'CreateOptionGroup': # works fine
+                    rds = boto3.client('rds', region_name=region)
+                    db_option_group_arn = detail['responseElements']['optionGroupArn']
+                    logger.info(f'Tagging RDS Option Group {db_option_group_arn}')
+                    rds.add_tags_to_resource(ResourceName=db_option_group_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    
+                elif event_name == 'CreateDBSnapshot': # works fine
+                    rds = boto3.client('rds', region_name=region)
+                    db_snapshot_arn = detail['responseElements']['dBSnapshotArn']
+                    logger.info(f'Tagging RDS Snapshot {db_snapshot_arn}')
+                    rds.add_tags_to_resource(ResourceName=db_snapshot_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateDBInstanceReadReplica':
+                    rds = boto3.client('rds', region_name=region)
+
+                    db_instance_arn = detail['responseElements']['dBInstanceArn']
+                    logger.info(f'Tagging RDS ReadReplica instance {db_instance_arn}')
+
+                    engine = detail['responseElements']['engine']
+                    
+                    if engine in non_comm_engine:
+                        rds_tag_value = rds_non_comm_tag_value
+                    elif engine in comm_engine:
+                        rds_tag_value = rds_comm_tag_value
+                    else:
+                        rds_tag_value = rds_non_comm_tag_value
+
+                    rds.add_tags_to_resource(ResourceName=db_instance_arn, Tags=[{'Key': default_tag_key, 'Value': rds_tag_value}])
+                
+                # Below update by Kennedy on 2024-01-24
+                elif event_name == 'CreateVpc': # works fine
+                    ec2 = boto3.client('ec2', region_name=region)
+                    vpc_id = detail['responseElements']['vpc']['vpcId']
+                    logger.info(f'Tagging VPC {vpc_id}')
+                    ec2.create_tags(Resources=[vpc_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateStateMachine': # works fine
+                    sfn = boto3.client('stepfunctions', region_name=region)
+                    state_machine_arn = detail['responseElements']['stateMachineArn']
+                    logger.info(f'Tagging State Machine {state_machine_arn}')
+                    sfn.tag_resource(resourceArn=state_machine_arn, tags=[{'key': default_tag_key, 'value': default_tag_value}])
+                
+                elif event_name == 'CreateSecret': # works fine
+                    secrets_manager = boto3.client('secretsmanager', region_name=region)
+                    secret_id = detail['responseElements']['arn']
+                    logger.info(f'Tagging Secret {secret_id}')
+                    secrets_manager.tag_resource(SecretId=secret_id, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'PutParameter': # works fine
+                    ssm = boto3.client('ssm', region_name=region)
+                    parameter_name = detail['requestParameters']['name']
+                    logger.info(f'Tagging SSM Parameter {parameter_name}')
+                    ssm.add_tags_to_resource(ResourceType='Parameter', ResourceId=parameter_name, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                
+                elif event_name == 'CreateQueue': # works fine
+                    sqs = boto3.client('sqs', region_name=region)
+                    queue_url = detail['responseElements']['queueUrl']
+                    logger.info(f'Tagging SQS Queue {queue_url}')
+                    sqs.tag_queue(QueueUrl=queue_url, Tags={default_tag_key: default_tag_value})
+
+                # Below update by Kennedy on 2024-01-25
+                elif event_name == 'CreateTopic': # works fine
+                    sns = boto3.client('sns', region_name=region)
+                    topic_arn = detail['responseElements']['topicArn']
+                    logger.info(f'Tagging SNS Topic {topic_arn}')
+                    sns.tag_resource(ResourceArn=topic_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                
+                elif event_name == 'CreateEmailIdentity': # works fine
+                    ses = boto3.client('sesv2', region_name=region)
+                    
+                    # Extract the identity from the event's requestParameters
+                    request_parameters = detail.get('requestParameters', {})
+                    identity = request_parameters.get('emailIdentity')
+                    
+                    if not identity:
+                        logger.warning('Unable to determine SES identity from the event.')
+                    else:
+                        logger.info(f'Tagging SES Identity {identity}')
+
+                        try:
+                            # Use tag_resource method to add tags to SES Identity
+                            ses.tag_resource(ResourceArn=f'arn:aws:ses:{region}:{ACCOUNT_ID}:identity/{identity}', Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                        except Exception as e:
+                            logger.error(f'Error tagging SES Identity: {e}')
+
+                        # If available, log the request parameters for debugging
+                        logger.debug(f'Request parameters: {request_parameters}')
+                
+                elif event_name == 'CreateHostedZone': # works fine
+                    route53 = boto3.client('route53', region_name=region)
+
+                    # Extract the hosted zone ID from the event
+                    hosted_zone_id = detail.get('responseElements', {}).get('hostedZone', {}).get('id')
+
+                    if not hosted_zone_id:
+                        logger.warning('Unable to determine Hosted Zone ID from the event.')
+                    else:
+                        hosted_zone_id = hosted_zone_id.replace('/hostedzone/', '')  # Extract only the Hosted Zone ID
+                        logger.info(f'Tagging Hosted Zone {hosted_zone_id}')
+
+                        try:
+                            # Use change_tags_for_resource method to add tags to Hosted Zone
+                            route53.change_tags_for_resource(
+                                ResourceType='hostedzone',
+                                ResourceId=hosted_zone_id,
+                                AddTags=[
+                                    {'Key': default_tag_key, 'Value': default_tag_value}
+                                ]
+                            )
+                        except Exception as e:
+                            logger.error(f'Error tagging Hosted Zone: {e}')
+                
+                elif event_name == 'CreateHealthCheck': # works fine
+                    route53 = boto3.client('route53', region_name=region)
+
+                    # Extract the health check ID from the event
+                    health_check_id = detail.get('responseElements', {}).get('healthCheck', {}).get('id')
+
+                    if not health_check_id:
+                        logger.warning('Unable to determine Health Check ID from the event.')
+                    else:
+                        logger.info(f'Tagging Health Check {health_check_id}')
+
+                        try:
+                            # Use change_tags_for_resource method to add tags to Health Check
+                            route53.change_tags_for_resource(
+                                ResourceType='healthcheck',
+                                ResourceId=health_check_id,
+                                AddTags=[
+                                    {'Key': default_tag_key, 'Value': default_tag_value}
+                                ]
+                            )
+                        except Exception as e:
+                            logger.error(f'Error tagging Health Check: {e}')
+
+                # Added by csaju
+                elif event_name == 'CreateCluster': # works fine
+                    eks = boto3.client('eks', region_name=region)
+                    cluster_name = detail['responseElements']['cluster']['name']
+                    logger.info(f'Tagging EKS cluster {cluster_name}')
+                    eks.tag_resource(resourceArn=f'arn:aws:eks:{region}:{ACCOUNT_ID}:cluster/{cluster_name}', tags={default_tag_key : default_tag_value}) # list
+                
+                elif event_name == 'AllocateAddress': # works fine
+                    ec2 = boto3.client('ec2', region_name=region)
+                    allocation_id = detail['responseElements']['allocationId']
+                    logger.info(f'Tagging EC2 Elastic IP (EIP) {allocation_id}')
+                    ec2.create_tags(Resources=[allocation_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}]) # dict
+
+                elif event_name == 'CreateImage': # # works fine
+                    ec2 = boto3.client('ec2', region_name=region)
+                    instance_id = detail['requestParameters']['instanceId'] # added for discussion
+                    image_id = detail['responseElements']['imageId']
+                    logger.info(f'Tagging EC2 instance {instance_id} and the newly created image {image_id}') # added for discussion
+                    logger.info(f'Tagging EC2 Image {image_id}')
+                    ec2.create_tags(Resources=[instance_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}]) # added for discussion
+                    ec2.create_tags(Resources=[image_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateInternetGateway': # works fine
+                    ec2 = boto3.client('ec2', region_name=region)
+                    internet_gateway_id = detail['responseElements']['internetGateway']['internetGatewayId']
+                    logger.info(f'Tagging EC2 Internet Gateway {internet_gateway_id}')
+                    ec2.create_tags(Resources=[internet_gateway_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateNatGateway': # works fine
+                    ec2 = boto3.client('ec2', region_name=region)
+                    nat_gateway_id = detail['responseElements']['CreateNatGatewayResponse']['natGateway']['natGatewayId']
+                    logger.info(f'Tagging EC2 Nat Gateway {nat_gateway_id}')
+                    ec2.create_tags(Resources=[nat_gateway_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                # Below update by Kennedy on 2024-01-31
+                elif event_name == 'CreateVolume': # works fine
+                    ec2 = boto3.client('ec2', region_name=region)
+                    volume_id = detail['responseElements']['volumeId']
+                    logger.info(f'Tagging EBS volume {volume_id}')
+                    ec2.create_tags(Resources=[volume_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+            # Updated by Aju on Feb 1
+                elif event_name == 'CreateSubnet': # works fine
+                    subnet_id = detail['responseElements']['subnet']['subnetId']
+                    logger.info(f'Tagging Subnet {subnet_id}')
+                    
+                    ec2 = boto3.client('ec2', region_name=region)
+                    ec2.create_tags(Resources=[subnet_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateNetworkInterface': # works fine
+                    network_interface_id = detail['responseElements']['networkInterface']['networkInterfaceId']
+                    logger.info(f'Tagging Network Interface {network_interface_id}')
+                    
+                    ec2 = boto3.client('ec2', region_name=region)
+                    ec2.create_tags(Resources=[network_interface_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                
+                elif event_name == 'CreateRouteTable': # works fine
+                    route_table_id = detail['responseElements']['routeTable']['routeTableId']
+                    logger.info(f'Tagging Route Table {route_table_id}')
+                    
+                    ec2 = boto3.client('ec2', region_name=region)
+                    ec2.create_tags(Resources=[route_table_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateSecurityGroup': # works fine
+                    security_group_id = detail['responseElements']['groupId']
+                    logger.info(f'Tagging Security Group {security_group_id}')
+                    
+                    ec2 = boto3.client('ec2', region_name=region)
+                    ec2.create_tags(Resources=[security_group_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateSnapshot': # works fine
+                    snapshot_id = detail['responseElements']['snapshotId']
+                    logger.info(f'Tagging Snapshot {snapshot_id}')
+                    
+                    ec2 = boto3.client('ec2', region_name=region)
+                    ec2.create_tags(Resources=[snapshot_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    
+                elif event_name == 'CreateNetworkAcl': # works fine
+                    network_acl_id = detail['responseElements']['networkAcl']['networkAclId']
+                    logger.info(f'Tagging Network ACL {network_acl_id}')
+                    
+                    ec2 = boto3.client('ec2', region_name=region)
+                    ec2.create_tags(Resources=[network_acl_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateDistribution': # works fine
+                    cloudfront = boto3.client('cloudfront', region_name=region)
+                    distribution_id = detail['responseElements']['distribution']['id']
+                    logger.info(f'Tagging CloudFront distribution {distribution_id}')
+                    cloudfront.tag_resource(Resource=f'arn:aws:cloudfront::{ACCOUNT_ID}:distribution/{distribution_id}', Tags={'Items': [{'Key': default_tag_key, 'Value': default_tag_value}]})
+                
+                elif event_name == 'CreateTable': # works fine
+                    dynamodb = boto3.client('dynamodb', region_name=region)
+                    table_name = detail['requestParameters']['tableName']
+                    logger.info(f'Tagging DynamoDB table {table_name}')
+                    dynamodb.tag_resource(ResourceArn=f'arn:aws:dynamodb:{region}:{context.invoked_function_arn.split(":")[4]}:table/{table_name}', Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                
+                elif event_name == 'CreateFunction20150331': # works fine
+                    lambda_client = boto3.client('lambda', region_name=region)
+                    function_name = detail['requestParameters']['functionName']
+                    logger.info(f'Tagging Lambda function {function_name}')
+                    lambda_client.tag_resource(Resource=f'arn:aws:lambda:{region}:{ACCOUNT_ID}:function:{function_name}', Tags={default_tag_key : default_tag_value})
+
+                #  Feb 5 by Aju 
+
+                elif event_name == "CreateFileSystem": # works fine
+                    efs = boto3.client('efs', region_name=region)
+                    file_system_id = detail['responseElements']['fileSystemId']
+                    logger.info(f'Tagging EFS (Elastic File System) {file_system_id}')
+                    efs.create_tags(FileSystemId=file_system_id, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == "CreateTargetGroup": # works fine
+                    elbv2 = boto3.client('elbv2', region_name=region)
+                    target_group_arn = detail['responseElements']['targetGroups'][0]['targetGroupArn']
+                    logger.info(f'Tagging Target Group {target_group_arn}')
+                    elbv2.add_tags(ResourceArns=[target_group_arn], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == "RegisterTaskDefinition": # works fine
+                    ecs = boto3.client('ecs', region_name=region)
+                    task_definition_arn = detail['responseElements']['taskDefinition']['taskDefinitionArn']
+                    logger.info(f'Tagging ECS Task Definition {task_definition_arn}')
+                    ecs.tag_resource(resourceArn=task_definition_arn, tags=[{'key': default_tag_key, 'value': default_tag_value}])
+
+                elif event_name == "CreateVault": # works fine
+                    glacier = boto3.client('glacier', region_name=region)
+                    vault_name = detail['requestParameters']['vaultName']
+                    logger.info(f'Tagging Glacier Vault {vault_name}')
+                    glacier.add_tags_to_vault(vaultName=vault_name, Tags={ default_tag_key : default_tag_value})
+
+
+                elif event_name == "CreateTrail": # works fine
+                    cloudtrail = boto3.client('cloudtrail', region_name=region)
+                    trail_name = detail['responseElements']['name'] 
+                    arn = detail['responseElements']['trailARN']
+                    logger.info(f'Tagging CloudTrail Trail {arn}')
+                    cloudtrail.add_tags(ResourceId=arn,
+                    TagsList=
+                    [
+                        {
+                            'Key': default_tag_key, 
+                            'Value': default_tag_value
+                        }
+                    ]
+                    )
+
+                elif event_name == "CreateLoadBalancer": # works well
+                    elbv2 = boto3.client('elbv2', region_name=region)
+                    load_balancer_arn = detail['responseElements']['loadBalancers'][0]['loadBalancerArn']
+                    logger.info(f'Tagging Load Balancer {load_balancer_arn}')
+                    elbv2.add_tags(ResourceArns=[load_balancer_arn], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                # fed 6 by aju
+
+                elif event_name == 'CreateCustomerGateway': # works fine
+                    ec2 = boto3.client('ec2', region_name=region)
+                    customer_gateway_id = detail['responseElements']['customerGateway']['customerGatewayId']
+                    logger.info(f'Tagging VPN Customer Gateway {customer_gateway_id}')
+                    ec2.create_tags(Resources=[customer_gateway_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    
+                elif event_name == 'CreateVpnConnection': # works fine
+                    ec2 = boto3.client('ec2', region_name=region)
+                    vpn_connection_id = detail['responseElements']['vpnConnection']['vpnConnectionId']
+                    logger.info(f'Tagging VPN Connection {vpn_connection_id}')
+                    ec2.create_tags(Resources=[vpn_connection_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    
+                elif event_name == 'CreateVpnGateway': # works fine
+                    ec2 = boto3.client('ec2', region_name=region)
+                    vpn_gateway_id = detail['responseElements']['vpnGateway']['vpnGatewayId']
+                    logger.info(f'Tagging VPN Private Gateway {vpn_gateway_id}')
+                    ec2.create_tags(Resources=[vpn_gateway_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateDhcpOptions': # works fine
+                    ec2 = boto3.client('ec2', region_name=region)
+                    dhcp_options_id = detail['responseElements']['dhcpOptions']['dhcpOptionsId']
+                    logger.info(f'Tagging DHCP Options {dhcp_options_id}')
+                    ec2.create_tags(Resources=[dhcp_options_id], Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == "CreateRepository": # works fine
+                    codecommit = boto3.client('codecommit', region_name=region)
+                    arn = detail['responseElements']['repositoryMetadata']['arn']
+                    logger.info(f'Tagging CodeCommit repository {arn}')
+                    codecommit.tag_resource(resourceArn=arn, tags={default_tag_key: default_tag_value})
+
+
+                elif event_name == "PutRule": # works fine
+                    events = boto3.client('events', region_name=region)
+                    rule_name = detail['responseElements']['ruleArn']
+                    logger.info(f'Tagging Events Rule {rule_name}')
+                    events.tag_resource(ResourceARN=rule_name, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateEndpoint': # works fine
+                    dms = boto3.client('dms', region_name=region)
+                    endpoint_arn = detail['responseElements']['endpoint']['endpointArn']
+                    logger.info(f'Tagging DMS endpoint {endpoint_arn}')
+                    dms.add_tags_to_resource(ResourceArn=endpoint_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateReplicationInstance': # works fine
+                    dms = boto3.client('dms', region_name=region)
+                    replication_instance_arn = detail['responseElements']['replicationInstance']['replicationInstanceArn']
+                    logger.info(f'Tagging DMS replication instance {replication_instance_arn}')
+                    dms.add_tags_to_resource(ResourceArn=replication_instance_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateReplicationSubnetGroup':  # works fine
+                    dms = boto3.client('dms', region_name=region)
+                    replication_subnet_group_arn = detail['responseElements']['replicationSubnetGroup']['replicationSubnetGroupArn']
+                    logger.info(f'Tagging DMS replication subnet group {replication_subnet_group_arn}')
+                    dms.add_tags_to_resource(ResourceArn=replication_subnet_group_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateReplicationTask': # works fine
+                    dms = boto3.client('dms', region_name=region)
+                    replication_task_arn = detail['responseElements']['replicationTask']['replicationTaskArn']
+                    logger.info(f'Tagging DMS replication task {replication_task_arn}')
+                    dms.add_tags_to_resource(ResourceArn=replication_task_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                # feb 7
+                elif event_name == 'CreateUser': # works fine
+                    iam = boto3.client('iam', region_name=region)
+                    user_name = detail['requestParameters']['userName']
+                    logger.info('Tagging IAM User ' + user_name)
+                    iam.tag_user(UserName=user_name, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    
+                elif event_name == 'CreateRole': # works fine
+                    iam = boto3.client('iam', region_name=region)
+                    role_name = detail['requestParameters']['roleName']
+                    logger.info('Tagging IAM Role ' + role_name)
+                    iam.tag_role(RoleName=role_name, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreatePolicy': # works fine
+                    iam = boto3.client('iam', region_name=region)
+                    policy_arn = detail['responseElements']['policy']['arn']
+                    logger.info('Tagging IAM Policy ' + policy_arn)
+                    iam.tag_policy(PolicyArn=policy_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateSAMLProvider': #  need to test. No metadata doc to test. Should work as expected
+                    iam = boto3.client('iam', region_name=region)
+                    provider_arn = detail['responseElements']['samlProviderArn']
+                    logger.info('Tagging IAM SAML Identity Provider ' + provider_arn)
+                    iam.tag_saml_provider(SAMLProviderArn=provider_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    
+                elif event_name == 'CreateOpenIDConnectProvider': #  need to test. No OIDC URL to test. Should work as expected
+                    iam = boto3.client('iam', region_name=region)
+                    provider_arn = detail['responseElements']['openIDConnectProviderArn']
+                    logger.info('Tagging IAM OpenID Connect Provider ' + provider_arn)
+                    iam.tag_open_id_connect_provider(OpenIDConnectProviderArn=provider_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateClusterSubnetGroup': # permission issue even with full admin permissions. Maybe being explicitly denied somehow. Maybe to check with AWS support.
+                    redshift = boto3.client('redshift', region_name=region)
+                    subnet_group_name = detail['responseElements']['clusterSubnetGroupName']
+                    logger.info('Tagging Redshift Cluster Subnet Group ' + subnet_group_name)
+                    #redshift.create_tags(ResourceName=subnet_group_name, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    redshift.create_tags(ResourceName=f'arn:aws:redshift:{region}:{ACCOUNT_ID}:cluster-subnet-group/{subnet_group_name}', Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'RunJobFlow': # Kennedy: no success. Does not capture in lambda logs. 
+                    emr = boto3.client('emr', region_name=region)
+                    cluster_id = detail['responseElements']['jobFlowId']
+                    logger.info('Tagging EMR Cluster ' + cluster_id)
+                    emr.add_tags(ResourceId=cluster_id, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'RequestCertificate': # working fine
+                    acm = boto3.client('acm', region_name=region)
+                    certificate_arn = detail['responseElements']['certificateArn']
+                    logger.info('Tagging Certificate ' + certificate_arn)
+                    acm.add_tags_to_certificate(CertificateArn=certificate_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'CreateClusterParameterGroup': # permission issue even with full admin permissions. Maybe being explicitly denied somehow. Maybe to check with AWS support.
+                    redshift = boto3.client('redshift', region_name=region)
+                    parameter_group_name = detail['responseElements']['parameterGroupName']
+                    logger.info('Tagging Redshift Cluster Parameter Group ' + parameter_group_name)
+                    #redshift.create_tags(ResourceName=parameter_group_name, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    redshift.create_tags(ResourceName=f'arn:aws:redshift:{region}:{ACCOUNT_ID}:cluster-parameter-group/{parameter_group_name}', Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == 'PutMetricAlarm': # Does not capture in lambda logs. seems Not supported action
+                    logger.info(f'Caught PutMetricAlarm {event_name}')
+                    cloudwatch = boto3.client('cloudwatch', region_name=region)
+                    response_elements = detail.get('requestParameters', {})
+                    alarm_name = requestParameters.get('alarmName')
+                    if alarm_name:
+                        logger.info(f'Tagging CloudWatch Alarm {alarm_name}')
+                        alarm_arn = f'arn:aws:cloudwatch:{region}:{ACCOUNT_ID}:alarm:{alarm_name}'
+                        cloudwatch.tag_resource(ResourceARN=alarm_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                        logger.info(f'Tagged resource {alarm_name} with {default_tag_key}:{default_tag_value}')
+                    else:
+                        logger.warning('Alarm Name not found in responseElements')
+                        
+                elif event_name == 'SetAlarmState': # Does not capture in lambda logs. seems Not supported action
+                    logger.info(f'Caught SetAlarmState {event_name}')
+                    cloudwatch = boto3.client('cloudwatch', region_name=region)
+                    alarm_name = detail['requestParameters']['alarmName']
+                    new_state = detail['requestParameters']['stateValue']
+                    logger.info(f'Alarm {alarm_name} state changed to {new_state}')
+                    arn = f'arn:aws:cloudwatch:{region}:{ACCOUNT_ID}:alarm:{alarm_name}'
+                    cloudwatch.tag_resource(ResourceARN=arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == "CreateElasticsearchDomain": # Creation takes time. Does not tag. Race condition.
+                    es = boto3.client('es', region_name=region)
+                    domain_arn = detail['responseElements']['aRN']
+                    logger.info(f'Tagging ES Service Domain {domain_arn}')
+                    es.add_tags(ARN=domain_arn, TagList=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    
+                elif event_name == "CreateCacheCluster": # Creation takes time. Does not tag. Race condition.
+                    elasticache = boto3.client('elasticache', region_name=region)
+                    cluster_arn = detail['responseElements']['aRN']
+                    logger.info(f'Tagging Elasticache Cluster {cluster_arn}')
+                    elasticache.add_tags_to_resource(ResourceName=cluster_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    
+                elif event_name == "CreateReplicationGroup": # Creation takes time. Does not tag. Race condition.
+                    elasticache = boto3.client('elasticache', region_name=region)
+                    cluster_arn = detail['responseElements']['aRN']
+                    logger.info(f'Tagging Elasticache Replication Group {cluster_arn}')
+                    elasticache.add_tags_to_resource(ResourceName=cluster_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                
+                elif event_name == "CreateServerlessCache": # Creation takes time. Does not tag. Race condition.
+                    elasticache = boto3.client('elasticache', region_name=region)
+                    cluster_arn = detail['responseElements']['serverlessCache']['aRN']
+                    logger.info(f'Tagging Elasticache Serverless Cache {cluster_arn}')
+                    elasticache.add_tags_to_resource(ResourceName=cluster_arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+
+            #    elif event_name == "CreateEnvironment"event_name == "CreateEnvironment" # need to test multiple times
+            #        elasticbeanstalk = boto3.client('elasticbeanstalk', region_name=region)
+
+            #        response = elasticbeanstalk.describe_environments()
+            #        environments = response['Environments']
+            #        environment_name = environments['EnvironmentName']
+            #        application_name = environments['ApplicationName']
+            #        arn = f'arn:aws:elasticbeanstalk:{region}:330183209093:environment/{application_name}/{environment_name}',
+            #        elasticbeanstalk.update_tags_for_resource(ResourceArn=arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+            #        application_name = detail['responseParameters']['applicationName']
+            #        environment_name = detail['requestParameters']['environmentName']
+            #        arn = f'arn:aws:elasticbeanstalk:{region}:330183209093:environment/{application_name}/{environment_name}'
+            #        logger.info(f'Tagging Elastic Beanstalk Environment {arn}')
+            #        elasticbeanstalk.update_tags_for_resource(ResourceArn=arn, Tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+
+                elif event_name == "CreateApplication": # Issue with support for it.
+                    logger.info('Caught CreateApplication ' + event_name)
+                    elasticbeanstalk = boto3.client('elasticbeanstalk', region_name=region)
+                    application_name = event['detail']['requestParameters']['applicationName']
+                    application_arn = f'arn:aws:elasticbeanstalk:{region}:{ACCOUNT_ID}:application/{application_name}'
+                    logger.info('Tagging Elastic Beanstalk Application ' + application_name)
+                    elasticbeanstalk.update_tags_for_resource(ResourceArn=application_arn, TagsToAdd=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    
+                elif event_name == "CreateEnvironment": # Issue with support for it.
+                    logger.info('Caught CreateEnvironment ' + event_name)
+                    elasticbeanstalk = boto3.client('elasticbeanstalk', region_name=region)
+                    environment_name = event['detail']['requestParameters']['environmentName']
+                    application_name = event['detail']['requestParameters']['applicationName']
+                    environment_arn = f'arn:aws:elasticbeanstalk:{region}:{ACCOUNT_ID}:environment/{application_name}/{environment_name}'
+                    logger.info('Tagging Elastic Beanstalk Environment ' + environment_name)
+                    elasticbeanstalk.update_tags_for_resource(ResourceArn=environment_arn, TagsToAdd=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                
+                elif event_name == 'CreatePipeline': # Cannot test. It's in maintenance mode by AWS
+                    iam = boto3.client('datapipeline', region_name=region)
+                    pipeline_id = detail['responseElements']['pipelineId']
+                    logger.info('Tagging Pipeline ' + pipeline_id)
+                    datapipeline.add_tags(pipelineId=pipeline_id, tags=[{'Key': default_tag_key, 'Value': default_tag_value}])
+                    
+                elif event_name == 'CreateCrawler': # Working fine
+                    glue = boto3.client('glue', region_name=region)
+                    crawler_name = detail['requestParameters']['name']
+                    crawler_arn = f'arn:aws:glue:{region}:{ACCOUNT_ID}:crawler/{crawler_name}'
+                    logger.info('Tagging Glue Crawler ' + crawler_arn)
+                    glue.tag_resource(ResourceArn=crawler_arn, TagsToAdd={default_tag_key : default_tag_value})
+                
+                elif event_name == 'CreateJob': # Working fine
+                    glue = boto3.client('glue', region_name=region)
+                    job_name = detail['requestParameters']['name']
+                    job_arn = f'arn:aws:glue:{region}:{ACCOUNT_ID}:job/{job_name}'
+                    logger.info('Tagging Glue Job ' + job_arn)
+                    glue.tag_resource(ResourceArn=job_arn, TagsToAdd={default_tag_key : default_tag_value})
+                    
+                elif event_name == 'CreateTrigger': # Working fine
+                    glue = boto3.client('glue', region_name=region)
+                    trigger_name = detail['requestParameters']['name']
+                    trigger_arn = f'arn:aws:glue:{region}:{ACCOUNT_ID}:trigger/{trigger_name}'
+                    logger.info('Tagging Glue Trigger ' + trigger_arn)
+                    glue.tag_resource(ResourceArn=trigger_arn, TagsToAdd={default_tag_key : default_tag_value})
+                
+                else:
+                    logger.warning('Not supported action')
+
+                logger.info('Remaining time (ms): ' + str(context.get_remaining_time_in_millis()) + '\\n')
+                return True
+    DependsOn:
+    - LambdaExecutionRole
+
+  TaggingRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "This CloudWatch rule invokes the Lambda Function to tag the AWS resources."
+      EventPattern:
+        source:
+          - "aws.ec2"
+          - "aws.s3"
+          - "aws.rds"
+          - "aws.acm"
+          - "aws.redshift"
+          - "aws.iam"
+          - "aws.dms"
+          - "aws.es"
+          - "aws.elasticbeanstalk"
+          - "aws.events"
+          - "aws.cloudwatch"
+          - "aws.cloudtrail"
+          - "aws.elasticache"
+          - "aws.elasticfilesystem"
+          - "aws.elasticloadbalancing"
+          - "aws.codecommit"
+          - "aws.ecs"
+          - "aws.glacier"
+          - "aws.lambda"
+          - "aws.cloudfront"
+          - "aws.dynamodb"
+          - "aws.eks"
+          - "aws.ec2"
+          - "aws.s3"
+          - "aws.rds"
+          - "aws.states"
+          - "aws.secretsmanager"
+          - "aws.ssm"
+          - "aws.sqs"
+          - "aws.sns"
+          - "aws.ses"
+          - "aws.route53"
+          - "aws.health"
+          - "aws.emr"
+          - "aws.glue"
+        detail-type:
+          - "AWS API Call via CloudTrail"
+        detail:
+          eventSource:
+            - "acm.amazonaws.com"
+            - "redshift.amazonaws.com"
+            - "iam.amazonaws.com"
+            - "dms.amazonaws.com"
+            - "es.amazonaws.com"
+            - "elasticbeanstalk.amazonaws.com"
+            - "events.amazonaws.com"
+            - "cloudwatch.amazonaws.com"
+            - "monitoring.amazonaws.com"
+            - "cloudtrail.amazonaws.com"
+            - "elasticache.amazonaws.com"
+            - "elasticfilesystem.amazonaws.com"
+            - "elasticloadbalancing.amazonaws.com"
+            - "codecommit.amazonaws.com"
+            - "ecs.amazonaws.com"
+            - "glacier.amazonaws.com"
+            - "cloudfront.amazonaws.com"
+            - "lambda.amazonaws.com"
+            - "dynamodb.amazonaws.com"
+            - "eks.amazonaws.com"
+            - "ec2.amazonaws.com"
+            - "s3.amazonaws.com"
+            - "rds.amazonaws.com"
+            - "states.amazonaws.com"
+            - "secretsmanager.amazonaws.com"
+            - "ssm.amazonaws.com"
+            - "sqs.amazonaws.com"
+            - "sns.amazonaws.com"
+            - "ses.amazonaws.com"
+            - "route53.amazonaws.com"
+            - "health.amazonaws.com"
+            - "elasticmapreduce.amazonaws.com"
+            - "glue.amazonaws.com"
+      State: "ENABLED"
+      Targets:
+        - Arn: !GetAtt AutoTaggingLambdaFunction.Arn
+          Id: "TaggingRule"
+    DependsOn: AutoTaggingLambdaFunction
+
+  TaggingLambdaSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Sub ${AutoTaggingLambdaFunction.Arn}
+      Principal: 'events.amazonaws.com'
+      SourceArn: !Sub ${TaggingRule.Arn}
+    DependsOn: AutoTaggingLambdaFunction
