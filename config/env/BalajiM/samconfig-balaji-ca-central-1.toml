@@ -1,0 +1,12 @@
+version = 0.1
+[default.deploy.parameters]
+stack_name = "auto-tag"
+resolve_s3 = true
+s3_prefix = "auto-tag"
+region = "ca-central-1"
+profile = "okta"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+disable_rollback = true
+parameter_overrides = "Region=\"ca-central-1\" ACCOUNTID=\"060218603926\" DefaultTagKey=\"CostCenter\" DefaultTagValue=\"Qubole-QA\" RDSCommercialTagValue=\"CostCenter\" RDSNonCommercialTagValue=\"Qubole-QA\""
+image_repositories = []
